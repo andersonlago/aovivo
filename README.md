@@ -93,5 +93,5 @@ e encerramento de sala.
 
 - Mesh P2P: ideal até ~6 pessoas no palco (cada conexão consome banda/c CPU).
 - Gravação é feita no navegador do host (composição canvas) — não há SFU/server-side.
-- Hash de senha simples (não bcrypt): adequado para uso interno/demo.
+- Senhas com hash scrypt + salt por sala e rate limiting; ainda assim, use HTTPS/TLS em produção.
 - Sem TURN: redes corporativas estritas podem falhar na conexão direta (adicione um servidor TURN em `RTC_CFG`).

@@ -9,8 +9,11 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { Server } from 'socket.io';
-import { v4 as uuid } from 'uuid';
+import crypto from 'crypto';
 import os from 'os';
+
+// tokens/UUIDs via crypto nativo (remove dependência `uuid`, que tinha advisory moderado)
+const uuid = () => crypto.randomUUID();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3000;
@@ -54,11 +57,46 @@ function saveDb() {
   }, 500);
 }
 
-function hash(s) {
-  // hash simples e determinístico para senhas de sala (suficiente p/ escopo didático)
+function hashPassword(salt, pwd) {
+  // scrypt com salt por sala — resiste a rainbow tables e força bruta local
+  return crypto.scryptSync(String(pwd), salt, 32).toString('hex');
+}
+
+function verifyPassword(room, pwd) {
+  if (!room.passwordHash || !room.passwordSalt) return false;
+  const candidate = hashPassword(room.passwordSalt, pwd);
+  const a = Buffer.from(candidate, 'hex');
+  const b = Buffer.from(room.passwordHash, 'hex');
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+// migração retroativa: salas antigas usavam hash djb2 sem salt ('h'+base36)
+function legacyHash(s) {
   let h = 5381;
   for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) >>> 0;
   return 'h' + h.toString(36);
+}
+
+function ensureModernPassword(room, providedPwd) {
+  if (room.passwordHash && room.passwordSalt) return true;
+  if (!room.passwordHash) return true; // sem senha
+  if (typeof providedPwd === 'string' && legacyHash(String(providedPwd)) === room.passwordHash) {
+    const salt = crypto.randomBytes(16).toString('hex');
+    room.passwordSalt = salt;
+    room.passwordHash = hashPassword(salt, providedPwd);
+    saveDb();
+    return true;
+  }
+  return false;
+}
+
+function genCode() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  const bytes = crypto.randomInt ? Array.from({ length: 6 }, () => chars[crypto.randomInt(chars.length)]) : null;
+  if (bytes) return bytes.join('');
+  let s = '';
+  for (let i = 0; i < 6; i++) s += chars[Math.floor(Math.random() * chars.length)];
+  return s;
 }
 
 function roomSummary(code) {
@@ -86,11 +124,40 @@ function roomSummary(code) {
 // ---------------------------------------------------------------------------
 // API REST
 // ---------------------------------------------------------------------------
-const app = express();
-app.use(express.json());
+// Rate limiter simples em memória (por IP): criação de salas, verificação de senha etc.
+const pwdAttempts = new Map(); // key -> { count, resetAt }
+function rateLimited(key, max, windowMs) {
+  const now = Date.now();
+  const a = pwdAttempts.get(key);
+  if (!a || now > a.resetAt) { pwdAttempts.set(key, { count: 1, resetAt: now + windowMs }); return false; }
+  a.count++;
+  return a.count > max;
+}
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of pwdAttempts) if (now > v.resetAt) pwdAttempts.delete(k);
+}, 60_000).unref();
 
-// criar sala
+const app = express();
+app.disable('x-powered-by');
+app.use(express.json({ limit: '100kb' }));
+
+// cabeçalhos de segurança (equivalente leve ao helmet, sem dependência extra)
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Permissions-Policy', 'camera=(self), microphone=(self), display-capture=(self)');
+  res.setHeader('Content-Security-Policy',
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
+    "img-src 'self' data:; media-src 'self' blob:; connect-src 'self' ws: wss:; frame-ancestors 'none'");
+  next();
+});
+
+// criar sala — limitada por IP para evitar spam de criação
 app.post('/api/rooms', (req, res) => {
+  if (rateLimited(`create:${req.ip}`, 10, 60_000))
+    return res.status(429).json({ error: 'Muitas salas criadas. Aguarde um minuto.' });
   const { name, hostName, password, maxGuests, waitingRoom, chatEnabled } = req.body || {};
   const activeCount = Object.values(db.rooms).filter(r => !r.closed).length;
   if (activeCount >= MAX_ROOMS) return res.status(429).json({ error: 'Limite de salas atingido' });
@@ -101,7 +168,7 @@ app.post('/api/rooms', (req, res) => {
     code,
     name: (name || 'Sala sem nome').slice(0, 80),
     hostName: (hostName || 'Apresentador').slice(0, 40),
-    passwordHash: password ? hash(String(password)) : null,
+    ...(password ? (() => { const salt = crypto.randomBytes(16).toString('hex'); return { passwordSalt: salt, passwordHash: hashPassword(salt, String(password)) }; })() : { passwordSalt: null, passwordHash: null }),
     maxGuests: Math.min(Math.max(parseInt(maxGuests, 10) || 10, 2), 50),
     waitingRoomEnabled: waitingRoom !== false,
     chatEnabled: chatEnabled !== false,
@@ -137,12 +204,15 @@ app.get('/api/rooms/:code', (req, res) => {
   });
 });
 
-// verificar senha (pré-entrada)
+// verificar senha (pré-entrada) — limitado por IP
 app.post('/api/rooms/:code/check', (req, res) => {
+  const ip = req.ip || 'unknown';
+  if (rateLimited(`check:${ip}`, 20, 60_000)) return res.status(429).json({ error: 'Muitas tentativas. Aguarde um minuto.' });
   const r = db.rooms[req.params.code.toUpperCase()];
   if (!r || r.closed) return res.status(404).json({ error: 'Sala não encontrada' });
   if (!r.passwordHash) return res.json({ ok: true });
-  const ok = hash(String(req.body?.password || '')) === r.passwordHash;
+  ensureModernPassword(r, req.body?.password);
+  const ok = verifyPassword(r, String(req.body?.password || ''));
   res.json({ ok });
 });
 
@@ -157,13 +227,6 @@ app.get('/api/rooms', (req, res) => {
 
 app.get('/api/health', (req, res) => res.json({ ok: true, uptime: process.uptime() }));
 
-function genCode() {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  let s = '';
-  for (let i = 0; i < 6; i++) s += chars[Math.floor(Math.random() * chars.length)];
-  return s;
-}
-
 // ---------------------------------------------------------------------------
 // Socket.IO — estado vivo das salas
 // liveRooms: code -> { participants:Map<socketId,p>, stage:Set<socketId>,
@@ -171,7 +234,16 @@ function genCode() {
 //                      mutedHosts:Set<socketId>, sockets:io.of().in(code) }
 // ---------------------------------------------------------------------------
 const server = http.createServer(app);
-const io = new Server(server, { maxHttpBufferSize: 5e6 });
+// trusts proxy: necessário para req.ip correto atrás de Nginx/Traefik com X-Forwarded-For
+app.set('trust proxy', true);
+const io = new Server(server, {
+  maxHttpBufferSize: 5e6,
+  // CORS restrito por padrão; defina ALLOWED_ORIGINS="https://seudominio.com" em produção
+  cors: {
+    origin: process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',').map(s => s.trim()) : true,
+    methods: ['GET', 'POST'],
+  },
+});
 const liveRooms = new Map();
 
 function ensureLive(code) {
@@ -223,8 +295,13 @@ io.on('connection', (socket) => {
       const { code, name, password, inviteToken, role, hostFlag } = payload || {};
       const room = db.rooms[(code || '').toUpperCase()];
       if (!room || room.closed) return ack?.({ error: 'Sala não encontrada ou encerrada.' });
-      if (room.passwordHash && hash(String(password || '')) !== room.passwordHash)
-        return ack?.({ error: 'Senha incorreta.' });
+      if (room.passwordHash) {
+        if (rateLimited(`join:${socket.handshake.address}`, 20, 60_000))
+          return ack?.({ error: 'Muitas tentativas. Aguarde um minuto.' });
+        ensureModernPassword(room, password);
+        if (!verifyPassword(room, String(password || '')))
+          return ack?.({ error: 'Senha incorreta.' });
+      }
 
       let finalRole = (role === 'host' || hostFlag) ? 'host' : 'guest';
       const invite = inviteToken ? findInvite(room, inviteToken) : null;

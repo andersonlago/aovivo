@@ -37,13 +37,14 @@ host.emit('host:admit', gr.you.id);
 await admittedP;
 console.log('4. admitido ✓');
 
-// 5. admitido já foi ao palco; estado atualizado via broadcast (poll)
+// 5. admitido já foi ao palco; aguarda broadcast com stage completo (2 pessoas)
 let st = null;
-for (let i = 0; i < 20 && !st; i++) {
-  const snap = guest.__lastState || null;
-  if (snap) st = snap; else await sleep(100);
+for (let i = 0; i < 30; i++) {
+  const snap = guest.__lastState;
+  if (snap && snap.stage.length === 2) { st = snap; break; }
+  await sleep(100);
 }
-console.log('5. palco tem 2 pessoas:', st && st.stage.length === 2);
+console.log('5. palco tem 2 pessoas:', !!st);
 
 // 6. chat sincronizado
 const chatP = once(host, 'chat:new');

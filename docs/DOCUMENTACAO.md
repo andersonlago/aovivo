@@ -98,7 +98,7 @@ Convidado abre link → GET /api/rooms/:CODE (mostra nome da sala, pede senha se
 │   └── DOCUMENTACAO.md     # este documento
 ├── server/
 │   ├── index.js            # Express + Socket.IO + persistência JSON (~476 linhas)
-│   ├── package.json        # deps: express, socket.io, uuid
+│   ├── package.json        # deps: express, socket.io (UUIDs via crypto.randomUUID nativo)
 │   └── test-flow.mjs       # teste ponta-a-ponta do protocolo (com socket.io-client)
 └── client/                 # SPA sem build
     ├── index.html          # telas: home, entrada, bastidores, sala de espera, palco
@@ -354,7 +354,9 @@ Formato de `participants[]` (`publicParticipant`):
 ```
 
 Notas:
-- `passwordHash` é inteiro (hash djb2 customizado) — `null` sem senha. Ver §12.
+- `passwordHash` é scrypt (32 bytes, hex) com `passwordSalt` aleatório por sala — `null` sem senha.
+  Salas antigas criadas com o hash djb2 legado são migradas automaticamente na primeira
+  autenticação bem-sucedida (`ensureModernPassword`). Ver §12.
 - `stage`/`layout` são regravados a cada broadcast (snapshot p/ restart);
   ao carregar o banco, `stage` é zerado (sockets antigos não sobrevivem).
 - Escrita debounced (500 ms) para não martelar o disco.
@@ -409,14 +411,19 @@ iceServers: [
 
 | Aspecto | Implementação atual | Recomendação em produção |
 |---|---|---|
-| Autenticação de sala | Token UUID por convite + senha opcional | Não vazar links; rotacionar removendo invites do JSON |
+| Autenticação de sala | Token UUIDv4 (crypto.randomUUID) por convite + senha opcional | Não vazar links; rotacionar removendo invites do JSON |
 | Convites | Guest = uso único (`status`); host = reutilizável | Gerar novo convite se suspeito de vazamento |
 | Autorização | `hostOnly()` ignora eventos administrativos de não-hosts | — |
-| Senhas | Hash djb2 determinístico (didático, **não criptográfico**) | Trocar por `bcrypt`/`argon2` se expor publicamente |
+| Senhas | **scrypt** (Node `crypto`) com salt aleatório por sala + comparação em tempo constante (`timingSafeEqual`) | Migrar p/ argon2id se expor publicamente; salas legadas (djb2) migram sozinhas no 1º login |
+| Rate limiting | Em memória, por IP: criação de sala (10/min), verificação de senha (20/min) e join via socket (20/min) → HTTP 429 | Usar Redis + proxy (Nginx/Traefik) para limite consistente entre réplicas |
+| Cabeçalhos HTTP | CSP restritiva, `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy: no-referrer`, `Permissions-Policy`, `x-powered-by` desativado | Ajustar CSP se carregar recursos externos |
+| CORS Socket.IO | Restrito via `ALLOWED_ORIGINS` (env); padrão `true` para dev | Definir `ALLOWED_ORIGINS=https://seudominio.com` em produção |
+| Container | Imagem alpine, usuário não-root (`USER node`), `HEALTHCHECK`, `no-new-privileges`, limite de memória 512 MB | Escanear imagem (trivy/grype) no CI |
+| Payload | `express.json({ limit: '100kb' })`, `maxHttpBufferSize` 5 MB no Socket.IO | Manter limites ao adicionar uploads |
 | Transporte | HTTP/WS puro | **TLS obrigatório** (proxy reverso) fora de localhost |
 | Validação de payload | Slices de tamanho (nome 40, msg 500, key 120), checagem de capacidade | Rate limiting no proxy |
 | XSS | Renderização via `textContent` no chat/participantes | Manter ao evoluir a UI |
-| DoS de salas | `MAX_ROOMS` limita salas abertas | Autenticar criação de sala se público |
+| DoS de salas | `MAX_ROOMS` limita salas abertas + rate limit de criação por IP | Autenticar criação de sala se público |
 | Dados | Volume local; chat/participantes voláteis | Backup de `/data` |
 
 ---
