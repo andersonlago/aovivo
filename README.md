@@ -4,6 +4,9 @@ Alternativa **self-hosted e dockerizada** ao StreamYard: estúdios de vídeo ao 
 no navegador, com muitas salas simultâneas em paralelo. **Zero instalação no cliente —
 basta um navegador moderno (Chrome/Edge/Firefox/Safari).**
 
+> 📚 **Documentação completa** (arquitetura, API REST, protocolo Socket.IO, modelo de
+> dados, segurança, escalabilidade, troubleshooting): [`docs/DOCUMENTACAO.md`](docs/DOCUMENTACAO.md)
+
 ## Recursos (paridade com o essencial do StreamYard)
 
 | Recurso | Como funciona |
