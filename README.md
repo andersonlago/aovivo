@@ -4,6 +4,9 @@ Alternativa **self-hosted e dockerizada** ao StreamYard: estúdios de vídeo ao 
 no navegador, com muitas salas simultâneas em paralelo. **Zero instalação no cliente —
 basta um navegador moderno (Chrome/Edge/Firefox/Safari).**
 
+> 📚 **Documentação completa** (arquitetura, API REST, protocolo Socket.IO, modelo de
+> dados, segurança, escalabilidade, troubleshooting): [`docs/DOCUMENTACAO.md`](docs/DOCUMENTACAO.md)
+
 ## Recursos (paridade com o essencial do StreamYard)
 
 | Recurso | Como funciona |
@@ -90,5 +93,5 @@ e encerramento de sala.
 
 - Mesh P2P: ideal até ~6 pessoas no palco (cada conexão consome banda/c CPU).
 - Gravação é feita no navegador do host (composição canvas) — não há SFU/server-side.
-- Hash de senha simples (não bcrypt): adequado para uso interno/demo.
+- Senhas com hash scrypt + salt por sala e rate limiting; ainda assim, use HTTPS/TLS em produção.
 - Sem TURN: redes corporativas estritas podem falhar na conexão direta (adicione um servidor TURN em `RTC_CFG`).

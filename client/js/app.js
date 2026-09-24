@@ -207,10 +207,13 @@ function wireSocket(sock) {
 
   sock.on('state', (s) => {
     state.participants = s.participants;
+    const prevStageKey = (state.stageIds || []).slice().sort().join(',');
     state.stageIds = s.stage;
     renderStage(s);
     updateCounts(s);
-    handlePeerSync(s);
+    // só re-negocia WebRTC quando a composição do palco mudou de fato —
+    // evita reconexões supérfluas a cada flag de cam/mic/hand broadcastada
+    if (prevStageKey !== s.stage.slice().sort().join(',')) renegotiateAll();
     syncRecordingUI(s.recording);
   });
 
@@ -373,20 +376,6 @@ const RTC_CFG = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
 
 function peerEntries() { return [...state.peers.keys()]; }
 
-function handlePeerSync(s) {
-  const want = new Set(s.stage.filter(id => id !== state.socket.id));
-  // desconecta quem saiu
-  for (const id of peerEntries()) {
-    if (!want.has(id)) destroyPeer(id);
-  }
-  // conecta novos (quem tem localStream oferece)
-  if (state.localStream) {
-    for (const id of want) {
-      if (!state.peers.has(id)) createPeer(id, true);
-    }
-  }
-}
-
 function createPeer(remoteId, initiator) {
   const pc = new RTCPeerConnection(RTC_CFG);
   const entry = { pc, remoteVideo: null, remoteAudioEl: null };
@@ -440,6 +429,20 @@ function destroyPeer(id) {
   try { e.pc.close(); } catch {}
   e.remoteAudioEl?.remove();
   state.peers.delete(id);
+}
+
+function handlePeerSync() {
+  const want = new Set((state.stageIds || []).filter(id => id !== state.socket?.id));
+  // desconecta quem saiu
+  for (const id of peerEntries()) {
+    if (!want.has(id)) destroyPeer(id);
+  }
+  // conecta novos (quem tem localStream oferece)
+  if (state.localStream) {
+    for (const id of want) {
+      if (!state.peers.has(id)) createPeer(id, true);
+    }
+  }
 }
 
 function renegotiateAll() {
@@ -525,21 +528,33 @@ $('#btn-hand').onclick = () => {
 
 $('#btn-share').onclick = async () => {
   if (state.sharing) {
-    state.screenStream?.getTracks().forEach(t => t.stop());
-    state.screenStream = null; state.sharing = false;
-    renegotiateAll();
-    updateMediaButtons();
+    stopScreenShare();
     return;
   }
   try {
     state.screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
     state.sharing = true;
     state.screenStream.getVideoTracks()[0].onended = () => $('#btn-share').click();
-    renegotiateAll();
+    // adiciona a track de tela às conexões já existentes via replaceTrack —
+    // evita re-negociar tudo (sem "flash"/black frame nos outros participantes)
+    for (const [, e] of state.peers) {
+      const sender = e.pc.getSenders().find(s => s.track?.kind === 'video');
+      if (sender) await sender.replaceTrack(state.screenStream.getVideoTracks()[0]).catch(() => {});
+    }
     updateMediaButtons();
     toast('🖥️ Compartilhando sua tela');
   } catch { /* cancelou */ }
 };
+
+function stopScreenShare() {
+  state.screenStream?.getTracks().forEach(t => t.stop());
+  state.screenStream = null; state.sharing = false;
+  for (const [, e] of state.peers) {
+    const sender = e.pc.getSenders().find(s => s.track?.kind === 'video');
+    if (sender) sender.replaceTrack(state.localStream?.getVideoTracks()[0] || null).catch(() => {});
+  }
+  updateMediaButtons();
+}
 
 $('#btn-leave').onclick = () => leaveAll();
 
