@@ -1,0 +1,19 @@
+services:
+  syncstream:
+    build: .
+    container_name: syncstream
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - DATA_DIR=/data
+      - MAX_ROOMS=200
+      # Defina PUBLIC_HOST com o IP/domínio acessível pelos convidados
+      # para que os links de convite saiam corretos. Ex.:
+      # - PUBLIC_HOST=192.168.0.42
+    volumes:
+      - rooms-data:/data
+
+volumes:
+  rooms-data:
