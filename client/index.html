@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SyncStream — estúdios ao vivo no navegador</title>
+<link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+
+<!-- ============ TELA: HOME ============ -->
+<section id="screen-home" class="screen active">
+  <header class="hero">
+    <div class="logo">▶ Sync<span>Stream</span></div>
+    <p class="tagline">Estúdios de transmissão ao vivo, direto no navegador. Sem instalação.</p>
+  </header>
+
+  <div class="home-grid">
+    <div class="card">
+      <h2>Criar uma sala</h2>
+      <form id="form-create">
+        <label>Nome da sala <input id="cr-name" required maxlength="80" placeholder="Ex.: Podcast das 8"></label>
+        <label>Seu nome <input id="cr-host" required maxlength="40" placeholder="Ex.: Ana"></label>
+        <label>Senha da sala <small>(opcional)</small> <input id="cr-pass" type="password" placeholder="Deixe vazio p/ sala aberta"></label>
+        <div class="row2">
+          <label>Máx. convidados <input id="cr-max" type="number" min="2" max="50" value="10"></label>
+          <label class="check"><input id="cr-wait" type="checkbox" checked> Sala de espera</label>
+        </div>
+        <button class="btn primary big" type="submit">Criar estúdio →</button>
+      </form>
+    </div>
+
+    <div class="card">
+      <h2>Entrar em uma sala</h2>
+      <form id="form-join-code">
+        <label>Código ou link da sala <input id="jc-code" required placeholder="Ex.: K7QMX2 ou cole o link"></label>
+        <button class="btn big" type="submit">Entrar</button>
+      </form>
+      <hr>
+      <h3>Salas ativas agora</h3>
+      <div id="room-list" class="room-list"><em>Carregando…</em></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TELA: LOBBY (pré-entrada) ============ -->
+<section id="screen-lobby" class="screen">
+  <div class="card narrow">
+    <h2 id="lb-title">Entrando…</h2>
+    <p id="lb-sub" class="muted"></p>
+    <form id="form-lobby">
+      <label>Seu nome <input id="lb-name" required maxlength="40"></label>
+      <label id="lb-pass-wrap" style="display:none">Senha da sala
+        <input id="lb-pass" type="password"></label>
+      <div class="preview-box">
+        <video id="lb-video" autoplay muted playsinline></video>
+        <div id="lb-nocam" class="nocam">📷 Câmera desligada</div>
+      </div>
+      <div class="row2">
+        <button type="button" class="btn" id="lb-toggle-cam">🎥 Ligar câmera</button>
+        <button type="button" class="btn" id="lb-toggle-mic">🎙️ Ligar microfone</button>
+      </div>
+      <button class="btn primary big" type="submit" id="lb-join-btn">Entrar na sala</button>
+      <p id="lb-error" class="error"></p>
+    </form>
+  </div>
+</section>
+
+<!-- ============ TELA: SALA DE ESPERA ============ -->
+<section id="screen-waiting" class="screen">
+  <div class="card narrow center">
+    <h2>⏳ Sala de espera</h2>
+    <p class="muted">Você entrou como convidado (<b id="wt-role"></b>).<br>
+    O apresentador vai te chamar para o estúdio em instantes.</p>
+    <div class="spinner"></div>
+    <button class="btn" id="wt-leave">Sair</button>
+  </div>
+</section>
+
+<!-- ============ TELA: ESTÚDIO ============ -->
+<section id="screen-studio" class="screen column">
+  <div id="stage-area" class="stage grid"></div>
+
+  <aside id="chat-panel" class="chat hidden">
+    <div class="chat-head">💬 Chat <button id="chat-close" class="x">×</button></div>
+    <div id="chat-msgs"></div>
+    <form id="chat-form"><input id="chat-input" maxlength="500" placeholder="Mensagem…" autocomplete="off"></form>
+  </aside>
+
+  <footer class="toolbar">
+    <div class="tb-left">
+      <span class="badge" id="room-badge"></span>
+      <span class="rec-dot hidden" id="rec-indicator">● REC <b id="rec-time">00:00</b></span>
+      <span class="live-count" id="online-count"></span>
+    </div>
+    <div class="tb-center">
+      <button class="tbtn" id="btn-mic" title="Microfone">🎙️</button>
+      <button class="tbtn" id="btn-cam" title="Câmera">🎥</button>
+      <button class="tbtn" id="btn-share" title="Compartilhar tela">🖥️</button>
+      <button class="tbtn" id="btn-hand" title="Levantar a mão">✋</button>
+      <button class="tbtn danger" id="btn-leave" title="Sair">🚪</button>
+    </div>
+    <div class="tb-right">
+      <!-- controles do host -->
+      <div class="host-controls hidden" id="host-controls">
+        <select id="sel-layout" title="Layout">
+          <option value="grid">Grade</option>
+          <option value="speaker">Palestrante</option>
+          <option value="strip">Faixa</option>
+        </select>
+        <button class="tbtn" id="btn-invite" title="Copiar link de convite">🔗</button>
+        <button class="tbtn" id="btn-invite-host" title="Convidar co-apresentador (bastidores)">🎭</button>
+        <button class="tbtn" id="btn-muteall" title="Silenciar todos">🔇</button>
+        <button class="tbtn" id="btn-chat-toggle" title="Mostrar chat">💬</button>
+        <button class="tbtn rec" id="btn-record" title="Gravar sessão">⏺️ Gravar</button>
+        <button class="tbtn" id="btn-stream" title="Transmitir (RTMP via OBS)">📡</button>
+        <button class="tbtn danger" id="btn-end" title="Encerrar sala">Encerrar</button>
+      </div>
+      <button class="tbtn" id="btn-chat-guest" title="Chat">💬</button>
+    </div>
+  </footer>
+</section>
+
+<!-- ============ MODAIS ============ -->
+<div id="modal-bg" class="modal-bg hidden">
+  <div class="modal card">
+    <h3 id="modal-title"></h3>
+    <div id="modal-body"></div>
+    <div class="modal-actions">
+      <button class="btn" id="modal-ok">OK</button>
+      <button class="btn hidden" id="modal-copy">Copiar link</button>
+    </div>
+  </div>
+</div>
+
+<div id="toasts"></div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
