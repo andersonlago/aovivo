@@ -194,6 +194,7 @@ app.post('/api/rooms', (req, res) => {
 app.get('/api/rooms/:code', (req, res) => {
   const r = db.rooms[req.params.code.toUpperCase()];
   if (!r || r.closed) return res.status(404).json({ error: 'Sala não encontrada' });
+  res.set('Cache-Control', 'no-store'); // metadados mudam a qualquer momento
   res.json({
     code: r.code,
     name: r.name,
@@ -216,8 +217,10 @@ app.post('/api/rooms/:code/check', (req, res) => {
   res.json({ ok });
 });
 
-// lista de salas ativas (modo demo/público)
+// lista de salas ativas (modo demo/público) — cache curto: a home não precisa
+// da última atualização em tempo real, e isso reduz carga em varreduras repetidas
 app.get('/api/rooms', (req, res) => {
+  res.set('Cache-Control', 'public, max-age=5');
   const list = Object.keys(db.rooms)
     .map(roomSummary)
     .filter(Boolean)
@@ -268,7 +271,14 @@ function publicParticipant(p) {
   };
 }
 
-function broadcastState(code) {
+// ---- otimização de broadcast: coalescência de eventos ----
+// Múltiplas mudanças em sequência rápida (ex.: várias flags de mídia ao entrar)
+// disparam UMA única emissão por sala a cada ~50ms. O estado enviado é sempre o
+// snapshot mais recente — clientes nunca veem estado inconsistente.
+const stateFlushTimers = new Map(); // code -> timeout
+const STATE_FLUSH_MS = 50;
+
+function sendStateNow(code) {
   const live = liveRooms.get(code);
   if (!live) return;
   const parts = [...live.participants.values()].map(publicParticipant);
@@ -279,8 +289,30 @@ function broadcastState(code) {
     recording: live.recording,
     chat: live.chat.slice(-200),
   });
+}
+
+function broadcastState(code) {
+  if (stateFlushTimers.has(code)) {
+    // já existe um flush agendado; ele usará o snapshot atualizado na hora
+    return;
+  }
+  const t = setTimeout(() => {
+    stateFlushTimers.delete(code);
+    sendStateNow(code);
+  }, STATE_FLUSH_MS);
+  t.unref?.();
+  stateFlushTimers.set(code, t);
   const r = db.rooms[code];
-  if (r) { r.stage = [...live.stage]; r.layout = live.layout; saveDb(); }
+  if (r) { r.stage = [...liveSnapshotStage(code)]; r.layout = liveLayout(code); saveDb(); }
+}
+
+function liveSnapshotStage(code) {
+  const live = liveRooms.get(code);
+  return live ? live.stage : [];
+}
+function liveLayout(code) {
+  const live = liveRooms.get(code);
+  return live ? live.layout : 'grid';
 }
 
 function findInvite(room, token) {
@@ -526,6 +558,8 @@ io.on('connection', (socket) => {
       live.stage.delete(socket.id);
       if (live.participants.size === 0) {
         liveRooms.delete(joined); // sala vazia sai da memória (persiste no json)
+        const pending = stateFlushTimers.get(joined);
+        if (pending) { clearTimeout(pending); stateFlushTimers.delete(joined); }
       } else {
         broadcastState(joined);
       }
@@ -536,7 +570,13 @@ io.on('connection', (socket) => {
 // ---------------------------------------------------------------------------
 // Cliente estático + SPA fallback
 // ---------------------------------------------------------------------------
-app.use(express.static(CLIENT_DIR));
+app.use(express.static(CLIENT_DIR, {
+  maxAge: '1h',                       // assets servidos com cache de 1h
+  setHeaders: (res, filePath) => {
+    if (filePath.endsWith('index.html'))
+      res.setHeader('Cache-Control', 'no-cache'); // HTML sempre revalidado
+  },
+}));
 app.get('*', (req, res) => res.sendFile(path.join(CLIENT_DIR, 'index.html')));
 
 let cachedHost = null;
